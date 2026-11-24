@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Downloader</title>
+<style>
+:root{--bg:#09090b;--panel:#121215;--line:#222228;--text:#ededf0;--mute:#85858f;--accent:#f2f2f5;--err:#ff7b7b;color-scheme:dark}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--text);font:15px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;min-height:100vh;display:flex;justify-content:center;padding:clamp(24px,8vh,80px) 20px}
+main{width:100%;max-width:620px}
+h1{font-size:22px;font-weight:600;letter-spacing:-.02em}
+.sub{color:var(--mute);margin:4px 0 28px}
+.row{display:flex;gap:8px}
+input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);padding:13px 14px;border-radius:10px;font:inherit}
+input:focus,button:focus-visible{outline:2px solid #4b4b57;outline-offset:2px}
+button{font:inherit;cursor:pointer;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--text);padding:13px 18px}
+button.primary{background:var(--accent);color:#0a0a0c;border-color:var(--accent);font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+#err{color:var(--err);margin-top:12px;min-height:1.5em}
+#card{display:none;margin-top:8px}
+.tabs{display:inline-flex;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:3px;margin-bottom:14px}
+.tabs button{border:0;background:none;padding:7px 16px;color:var(--mute);border-radius:8px}
+.tabs button.on{background:#25252b;color:var(--text)}
+.stage{aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden;position:relative;border:1px solid var(--line)}
+.stage iframe,.stage img{width:100%;height:100%;border:0;object-fit:cover;display:block}
+.stage.audio img{filter:brightness(.45) blur(1px)}
+.stage audio{position:absolute;left:12px;right:12px;bottom:12px;width:calc(100% - 24px)}
+.meta{margin:14px 0 22px}
+.meta b{display:block;font-weight:600;font-size:17px;letter-spacing:-.01em}
+.meta span{color:var(--mute)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px}
+.chip{display:flex;flex-direction:column;align-items:flex-start;padding:9px 14px;min-width:92px}
+.chip small{color:var(--mute);font-size:12px}
+.chip.on{border-color:var(--accent);background:#1b1b20}
+.dl{width:100%}
+.bar{height:3px;background:var(--line);border-radius:3px;margin-top:14px;overflow:hidden;display:none}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
+#status{color:var(--mute);margin-top:10px;min-height:1.5em}
+</style>
+</head>
+<body>
+<main>
+  <h1>Downloader</h1>
+  <p class="sub">Paste a YouTube link, preview it, then save it as MP4 or MP3.</p>
+
+  <div class="row">
+    <input id="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" aria-label="YouTube link">
+    <button id="go" class="primary">Fetch</button>
+  </div>
+  <p id="err" role="alert"></p>
+
+  <section id="card">
+    <div class="tabs" role="tablist">
+      <button data-k="mp4" class="on">MP4 video</button>
+      <button data-k="mp3">MP3 audio</button>
+    </div>
+    <div class="stage" id="stage"></div>
+    <div class="meta"><b id="title"></b><span id="info"></span></div>
+    <div class="chips" id="chips"></div>
+    <button id="dl" class="primary dl">Download</button>
+    <div class="bar" id="bar"><i></i></div>
+    <p id="status"></p>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let D = null, kind = 'mp4', pick = {mp4: null, mp3: null}, busy = false;
+
+const size = b => !b ? 'size unknown' : b >= 1e9 ? '~' + (b / 1e9).toFixed(2) + ' GB' : '~' + Math.round(b / 1e6) + ' MB';
+const clock = s => { s = Math.round(s); const h = s / 3600 | 0, m = s % 3600 / 60 | 0, x = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
+const post = (u, b) => fetch(u, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(b)}).then(r => r.json());
+
+async function fetchInfo() {
+  const url = $('#url').value.trim();
+  $('#err').textContent = ''; $('#card').style.display = 'none';
+  if (!url) return;
+  $('#go').disabled = true; $('#go').textContent = 'Fetching…';
+  try {
+    const d = await post('/api/info', {url});
+    if (d.error) throw new Error(d.error);
+    D = d;
+    pick.mp4 = d.video.length ? d.video[0].height : null;
+    pick.mp3 = 320;
+    $('#title').textContent = d.title;
+    $('#info').textContent = [d.channel, clock(d.duration)].filter(Boolean).join('  ·  ');
+    $('#card').style.display = 'block';
+    setKind('mp4');
+  } catch (e) { $('#err').textContent = e.message; }
+  $('#go').disabled = false; $('#go').textContent = 'Fetch';
+}
+
+function setKind(k) {
+  kind = k;
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.k === k));
+  const st = $('#stage'); st.className = 'stage' + (k === 'mp3' ? ' audio' : '');
+  st.innerHTML = '';
+  if (k === 'mp4') {
+    const f = document.createElement('iframe');
+    f.src = 'https://www.youtube-nocookie.com/embed/' + D.id;
+    f.allow = 'accelerometer; encrypted-media; picture-in-picture; fullscreen';
+    f.allowFullscreen = true; f.title = 'Video preview';
+    st.append(f);
+  } else {
+    const img = new Image(); img.src = D.thumb; img.alt = '';
+    const a = document.createElement('audio');
+    a.controls = true; a.preload = 'none'; a.src = '/api/preview-audio?url=' + encodeURIComponent(D.url);
+    st.append(img, a);
+  }
+  chips();
+}
+
+function chips() {
+  const box = $('#chips'); box.innerHTML = '';
+  const opts = kind === 'mp4'
+    ? D.video.map(v => ({v: v.height, t: v.height + 'p' + (v.fps > 30 ? ' ' + Math.round(v.fps) : ''), s: size(v.size)}))
+    : D.audio.map(a => ({v: a.kbps, t: a.kbps + ' kbps', s: size(a.size)}));
+  if (!opts.length) { box.textContent = 'No downloadable formats found.'; }
+  opts.forEach(o => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (o.v === pick[kind] ? ' on' : '');
+    b.innerHTML = `${o.t}<small>${o.s}</small>`;
+    b.onclick = () => { pick[kind] = o.v; chips(); };
+    box.append(b);
+  });
+  $('#dl').textContent = 'Download ' + kind.toUpperCase();
+}
+
+async function download() {
+  if (busy || !pick[kind]) return;
+  busy = true; $('#dl').disabled = true;
+  $('#bar').style.display = 'block'; $('#status').textContent = 'Starting…';
+  const bar = $('#bar i'); bar.style.width = '0';
+  try {
+    const {job, error} = await post('/api/download', {url: D.url, kind, q: pick[kind]});
+    if (error) throw new Error(error);
+    for (;;) {
+      await new Promise(r => setTimeout(r, 700));
+      const p = await (await fetch('/api/progress/' + job)).json();
+      if (p.error) throw new Error(p.error);
+      bar.style.width = (p.pct || 0) + '%';
+      $('#status').textContent = p.stage + (p.speed && p.stage === 'Downloading' ? '  ·  ' + p.speed : '');
+      if (p.done) { $('#status').textContent = 'Saved: ' + p.name; location.href = '/api/file/' + job; break; }
+    }
+  } catch (e) { $('#status').textContent = ''; $('#err').textContent = e.message; }
+  busy = false; $('#dl').disabled = false;
+}
+
+$('#go').onclick = fetchInfo;
+$('#url').onkeydown = e => e.key === 'Enter' && fetchInfo();
+$('#dl').onclick = download;
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => D && setKind(b.dataset.k));
+</script>
+</body>
+</html>
