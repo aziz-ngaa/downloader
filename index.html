@@ -5,19 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Downloader</title>
 <style>
-:root{--bg:#09090b;--panel:#121215;--line:#222228;--text:#ededf0;--mute:#85858f;--accent:#f2f2f5;--err:#ff7b7b;color-scheme:dark}
+:root{--bg:#09090b;--panel:#121215;--line:#222228;--text:#ededf0;--mute:#7a7a85;--accent:#f2f2f5;--err:#ff7b7b;color-scheme:dark}
 *{box-sizing:border-box;margin:0}
 body{background:var(--bg);color:var(--text);font:15px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif;min-height:100vh;display:flex;justify-content:center;padding:clamp(24px,8vh,80px) 20px}
-main{width:100%;max-width:620px}
+main{width:100%;max-width:620px;position:relative;z-index:1}
 h1{font-size:22px;font-weight:600;letter-spacing:-.02em}
-.sub{color:var(--mute);margin:4px 0 28px}
-.row{display:flex;gap:8px}
-input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--text);padding:13px 14px;border-radius:10px;font:inherit}
-input:focus,button:focus-visible{outline:2px solid #4b4b57;outline-offset:2px}
-button{font:inherit;cursor:pointer;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--text);padding:13px 18px}
+.sub{color:var(--mute);margin:4px 0 24px}
+.row{display:flex;gap:8px;align-items:stretch}
+.input-wrap{flex:1;min-width:0;display:flex;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding-right:6px}
+.input-wrap:focus-within{outline:2px solid #4b4b57;outline-offset:2px}
+input[type="text"]{flex:1;min-width:0;background:transparent;border:0;color:var(--text);padding:13px 10px 13px 14px;font:inherit;outline:none}
+input[type="text"]::placeholder{color:#52525c}
+button{font:inherit;cursor:pointer;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--text);padding:13px 18px;transition:opacity .15s,background .15s}
+button.ghost{border:0;background:#1c1c21;color:var(--mute);padding:7px 11px;font-size:13px;border-radius:7px}
+button.ghost:hover{color:var(--text);background:#26262d}
 button.primary{background:var(--accent);color:#0a0a0c;border-color:var(--accent);font-weight:600}
 button:disabled{opacity:.5;cursor:default}
-#err{color:var(--err);margin-top:12px;min-height:1.5em}
+.opts{margin-top:10px;display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--mute)}
+.cookie-label{cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:6px}
+.cookie-label:hover{color:var(--text);background:var(--panel)}
+#err{color:var(--err);margin-top:12px;min-height:1.5em;font-size:14px}
 #card{display:none;margin-top:8px}
 .tabs{display:inline-flex;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:3px;margin-bottom:14px}
 .tabs button{border:0;background:none;padding:7px 16px;color:var(--mute);border-radius:8px}
@@ -36,7 +43,7 @@ button:disabled{opacity:.5;cursor:default}
 .dl{width:100%}
 .bar{height:3px;background:var(--line);border-radius:3px;margin-top:14px;overflow:hidden;display:none}
 .bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
-#status{color:var(--mute);margin-top:10px;min-height:1.5em}
+#status{color:var(--mute);margin-top:10px;min-height:1.5em;font-size:14px}
 </style>
 </head>
 <body>
@@ -45,20 +52,32 @@ button:disabled{opacity:.5;cursor:default}
   <p class="sub">Paste a YouTube link, preview it, then save it as MP4 or MP3.</p>
 
   <div class="row">
-    <input id="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" aria-label="YouTube link">
-    <button id="go" class="primary">Fetch</button>
+    <div class="input-wrap">
+      <input id="url" type="text" placeholder="Paste YouTube URL here..." autocomplete="off" spellcheck="false" aria-label="YouTube link">
+      <button id="paste" type="button" class="ghost">Paste</button>
+    </div>
+    <button id="go" type="button" class="primary">Fetch</button>
   </div>
+
+  <div class="opts">
+    <label class="cookie-label" title="Optional: upload Netscape cookies.txt if YouTube blocks cloud server IPs">
+      <input id="ck" type="file" accept=".txt" hidden>
+      <span id="ck-text">+ Attach cookies.txt (optional)</span>
+    </label>
+    <span id="ck-clear" style="cursor:pointer;display:none">Clear</span>
+  </div>
+
   <p id="err" role="alert"></p>
 
   <section id="card">
     <div class="tabs" role="tablist">
-      <button data-k="mp4" class="on">MP4 video</button>
-      <button data-k="mp3">MP3 audio</button>
+      <button type="button" data-k="mp4" class="on">MP4 video</button>
+      <button type="button" data-k="mp3">MP3 audio</button>
     </div>
     <div class="stage" id="stage"></div>
     <div class="meta"><b id="title"></b><span id="info"></span></div>
     <div class="chips" id="chips"></div>
-    <button id="dl" class="primary dl">Download</button>
+    <button id="dl" type="button" class="primary dl">Download</button>
     <div class="bar" id="bar"><i></i></div>
     <p id="status"></p>
   </section>
@@ -71,15 +90,48 @@ let D = null, kind = 'mp4', pick = {mp4: null, mp3: null}, busy = false;
 const size = b => !b ? 'size unknown' : b >= 1e9 ? '~' + (b / 1e9).toFixed(2) + ' GB' : '~' + Math.round(b / 1e6) + ' MB';
 const clock = s => { s = Math.round(s); const h = s / 3600 | 0, m = s % 3600 / 60 | 0, x = s % 60;
   return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
-const post = (u, b) => fetch(u, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(b)}).then(r => r.json());
+
+$('#paste').onclick = async () => {
+  $('#err').textContent = '';
+  try {
+    const txt = await navigator.clipboard.readText();
+    if (txt) {
+      $('#url').value = txt.trim();
+      $('#url').focus();
+    } else {
+      $('#err').textContent = 'Clipboard is empty or has no text.';
+    }
+  } catch {
+    $('#url').focus();
+    $('#err').textContent = 'Browser blocked clipboard access — tap the box and press Ctrl+V (or long-press > Paste).';
+  }
+};
+
+$('#ck').onchange = () => {
+  const f = $('#ck').files[0];
+  if (f) {
+    $('#ck-text').textContent = '✓ ' + f.name;
+    $('#ck-clear').style.display = 'inline';
+  }
+};
+
+$('#ck-clear').onclick = () => {
+  $('#ck').value = '';
+  $('#ck-text').textContent = '+ Attach cookies.txt (optional)';
+  $('#ck-clear').style.display = 'none';
+};
 
 async function fetchInfo() {
   const url = $('#url').value.trim();
   $('#err').textContent = ''; $('#card').style.display = 'none';
-  if (!url) return;
+  if (!url) { $('#url').focus(); return; }
   $('#go').disabled = true; $('#go').textContent = 'Fetching…';
   try {
-    const d = await post('/api/info', {url});
+    const fd = new FormData();
+    fd.append('url', url);
+    if ($('#ck').files[0]) fd.append('cookies', $('#ck').files[0]);
+    const r = await fetch('/api/info', {method: 'POST', body: fd});
+    const d = await r.json();
     if (d.error) throw new Error(d.error);
     D = d;
     pick.mp4 = d.video.length ? d.video[0].height : null;
@@ -106,7 +158,8 @@ function setKind(k) {
   } else {
     const img = new Image(); img.src = D.thumb; img.alt = '';
     const a = document.createElement('audio');
-    a.controls = true; a.preload = 'none'; a.src = '/api/preview-audio?url=' + encodeURIComponent(D.url);
+    a.controls = true; a.preload = 'none';
+    a.src = '/api/preview-audio?url=' + encodeURIComponent(D.url) + (D.cookie_id ? '&cid=' + encodeURIComponent(D.cookie_id) : '');
     st.append(img, a);
   }
   chips();
@@ -120,6 +173,7 @@ function chips() {
   if (!opts.length) { box.textContent = 'No downloadable formats found.'; }
   opts.forEach(o => {
     const b = document.createElement('button');
+    b.type = 'button';
     b.className = 'chip' + (o.v === pick[kind] ? ' on' : '');
     b.innerHTML = `${o.t}<small>${o.s}</small>`;
     b.onclick = () => { pick[kind] = o.v; chips(); };
@@ -134,7 +188,12 @@ async function download() {
   $('#bar').style.display = 'block'; $('#status').textContent = 'Starting…';
   const bar = $('#bar i'); bar.style.width = '0';
   try {
-    const {job, error} = await post('/api/download', {url: D.url, kind, q: pick[kind]});
+    const res = await fetch('/api/download', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url: D.url, kind, q: pick[kind], cookie_id: D.cookie_id})
+    });
+    const {job, error} = await res.json();
     if (error) throw new Error(error);
     for (;;) {
       await new Promise(r => setTimeout(r, 700));

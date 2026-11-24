@@ -21,7 +21,14 @@ def valid(url):
 
 
 def clean_err(e):
-    return str(e).replace("ERROR: ", "")[:300]
+    return str(e).replace("ERROR: ", "")[:320]
+
+
+def ydl_opts(base, cookie_path=None):
+    opts = dict(base)
+    if cookie_path and os.path.exists(cookie_path):
+        opts["cookiefile"] = cookie_path
+    return opts
 
 
 @app.get("/")
@@ -31,13 +38,22 @@ def index():
 
 @app.post("/api/info")
 def api_info():
-    url = (request.json or {}).get("url", "").strip()
+    url = (request.form.get("url") or (request.json or {}).get("url") or "").strip()
     if not valid(url):
         return jsonify(error="Enter a valid YouTube link."), 400
+
+    cookie_path = None
+    f_cookie = request.files.get("cookies")
+    if f_cookie and f_cookie.filename:
+        cookie_path = os.path.join(TMP, f"ck_{uuid.uuid4().hex}.txt")
+        f_cookie.save(cookie_path)
+
     try:
-        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "skip_download": True}) as y:
+        with yt_dlp.YoutubeDL(ydl_opts({"quiet": True, "noplaylist": True, "skip_download": True}, cookie_path)) as y:
             i = y.extract_info(url, download=False)
     except Exception as e:
+        if cookie_path and os.path.exists(cookie_path):
+            os.remove(cookie_path)
         return jsonify(error=clean_err(e)), 400
 
     fm = i.get("formats", [])
@@ -57,9 +73,10 @@ def api_info():
              for h, v in sorted(vids.items(), reverse=True)]
 
     dur = i.get("duration") or 0
+    cookie_id = os.path.basename(cookie_path) if cookie_path else None
     return jsonify(
         id=i["id"], title=i["title"], channel=i.get("uploader"), duration=dur,
-        thumb=i.get("thumbnail"), url=url, video=video,
+        thumb=i.get("thumbnail"), url=url, video=video, cookie_id=cookie_id,
         audio=[{"kbps": k, "size": int(dur * k * 125)} for k in (320, 256, 192, 128)],
     )
 
@@ -67,17 +84,20 @@ def api_info():
 @app.get("/api/preview-audio")
 def preview_audio():
     url = request.args.get("url", "")
+    cid = request.args.get("cid", "")
     if not valid(url):
         abort(400)
-    hit = CACHE.get(url)
+    cookie_path = os.path.join(TMP, os.path.basename(cid)) if cid else None
+    key = (url, cid)
+    hit = CACHE.get(key)
     if not hit or time.time() - hit[0] > 1800:
         try:
-            with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True,
-                                   "format": "bestaudio[ext=m4a]/bestaudio"}) as y:
+            with yt_dlp.YoutubeDL(ydl_opts({"quiet": True, "noplaylist": True,
+                                            "format": "bestaudio[ext=m4a]/bestaudio"}, cookie_path)) as y:
                 i = y.extract_info(url, download=False)
         except Exception:
             abort(502)
-        hit = CACHE[url] = (time.time(), i["url"], dict(i.get("http_headers", {})))
+        hit = CACHE[key] = (time.time(), i["url"], dict(i.get("http_headers", {})))
     headers = dict(hit[2])
     headers["Range"] = request.headers.get("Range", "bytes=0-")
     r = requests.get(hit[1], headers=headers, stream=True, timeout=20)
@@ -86,7 +106,7 @@ def preview_audio():
                     headers={k: r.headers[k] for k in keep if k in r.headers})
 
 
-def run(job, url, kind, q):
+def run(job, url, kind, q, cookie_path):
     d = os.path.join(TMP, job)
     os.makedirs(d)
 
@@ -98,8 +118,8 @@ def run(job, url, kind, q):
         elif p["status"] == "finished":
             JOBS[job]["stage"] = "Processing"
 
-    o = {"quiet": True, "noplaylist": True, "windowsfilenames": True,
-         "outtmpl": os.path.join(d, "%(title).150B.%(ext)s"), "progress_hooks": [hook]}
+    o = ydl_opts({"quiet": True, "noplaylist": True, "windowsfilenames": True,
+                  "outtmpl": os.path.join(d, "%(title).150B.%(ext)s"), "progress_hooks": [hook]}, cookie_path)
     if kind == "mp4":
         h = int(q)
         o.update(format=f"bv*[height<={h}][vcodec^=avc1]+ba[ext=m4a]/bv*[height<={h}]+ba/b[height<={h}]/b",
@@ -123,13 +143,18 @@ def api_download():
     b = request.json or {}
     if not valid(b.get("url", "")) or b.get("kind") not in ("mp4", "mp3"):
         return jsonify(error="Bad request."), 400
-    for n in os.listdir(TMP):  # purge anything older than an hour
+    for n in os.listdir(TMP):
         p = os.path.join(TMP, n)
         if time.time() - os.path.getmtime(p) > 3600:
-            shutil.rmtree(p, ignore_errors=True)
+            if os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                os.remove(p)
+    cid = b.get("cookie_id") or ""
+    cookie_path = os.path.join(TMP, os.path.basename(cid)) if cid else None
     job = uuid.uuid4().hex
     JOBS[job] = {"stage": "Starting", "pct": 0}
-    threading.Thread(target=run, args=(job, b["url"], b["kind"], b["q"]), daemon=True).start()
+    threading.Thread(target=run, args=(job, b["url"], b["kind"], b["q"], cookie_path), daemon=True).start()
     return jsonify(job=job)
 
 
